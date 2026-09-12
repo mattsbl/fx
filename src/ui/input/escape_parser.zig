@@ -42,6 +42,11 @@ const alt_modifier: u16 = 0x02;
 const ctrl_modifier: u16 = 0x04;
 const super_modifier: u16 = 0x08;
 
+fn stripLockModifiers(modifiers: u16) u16 {
+    // Caps Lock (bit 6) and Num Lock (bit 7) describe state, not key intent.
+    return modifiers & 0x3F;
+}
+
 fn composerMove(kind: input_action.MoveKind, modifiers: u16) InputEscapeAction {
     return .{ .composer_shortcut = .{ .move = .{
         .kind = kind,
@@ -96,8 +101,7 @@ fn ctrlOKeyAction(meta_prefixed: bool, modifiers: u16) InputEscapeAction {
 // single-parameter and modifier stages, and never returns null so the leading
 // ESC's pending-cancel is always cleared.
 fn kittyUnicodeKeyAction(keycode: u16, modifiers: u16, meta_prefixed: bool) InputEscapeAction {
-    // Strip Caps Lock (bit 6) and Num Lock (bit 7) — lock states, not modifiers.
-    const mods = modifiers & 0x3F;
+    const mods = stripLockModifiers(modifiers);
     if (keycode == 27 and mods == 0) return .escape;
     if (keycode == kitty_up_key or keycode == kitty_down_key) {
         if (meta_prefixed or mods != 0) {
@@ -586,7 +590,7 @@ pub fn consumeInputEscapeByteWithMouse(
 
             if (byte == '~') {
                 const keycode = param2.*;
-                const modifiers = if (param.* > 0) param.* - 1 else 0;
+                const modifiers = stripLockModifiers(if (param.* > 0) param.* - 1 else 0);
                 resetMouseEscapeDecode(stage, param, param2, mouse);
                 if (keycode == 3 and (modifiers & 0x08) != 0) {
                     return .delete_to_line_end;
