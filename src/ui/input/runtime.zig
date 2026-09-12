@@ -3446,14 +3446,12 @@ test "input escape parser handles alt+delete as delete_word_right" {
     try std.testing.expectEqual(@as(u8, 0), stage);
 }
 
-test "input escape parser still returns delete_next for plain CSI 3~" {
-    var stage: u8 = 1;
-    var param: u16 = 0;
-    var param2: u16 = 0;
-    try std.testing.expectEqual(@as(?InputEscapeAction, null), consumeInputEscapeByte(&stage, &param, &param2, '['));
-    try std.testing.expectEqual(@as(?InputEscapeAction, null), consumeInputEscapeByte(&stage, &param, &param2, '3'));
-    try std.testing.expectEqual(@as(?InputEscapeAction, .delete_next), consumeInputEscapeByte(&stage, &param, &param2, '~'));
-    try std.testing.expectEqual(@as(u8, 0), stage);
+test "input escape parser ignores lock modifiers on plain CSI 3~ Delete" {
+    try expectEscapeAction("[3~", .delete_next);
+    try expectEscapeAction("[3;1~", .delete_next);
+    try expectEscapeAction("[3;65~", .delete_next);
+    // foot reports this sequence while Num Lock is active.
+    try expectEscapeAction("[3;129~", .delete_next);
 }
 
 test "deleteWordLeft removes preceding word from input" {
