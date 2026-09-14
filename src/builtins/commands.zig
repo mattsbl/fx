@@ -245,6 +245,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "upgrade",
         .usage = "upgrade [--channel <stable|dev>] [--json]",
         .summary = "Upgrade 𝒇x on the selected release channel",
+        .hidden_from_top_level_help = true,
         .options = &.{
             .{ .flag = "--channel <stable|dev>", .description = "Select and remember the release channel" },
             json_option,
@@ -319,7 +320,6 @@ pub const top_level_help_groups = [_]TopLevelHelpGroup{
         .{ .kind = .mcp, .usage = "mcp <command> ..." },
         .{ .kind = .permissions, .usage = "permissions" },
         .{ .kind = .workspace, .usage = "workspace" },
-        .{ .kind = .upgrade, .usage = "upgrade", .summary = "Upgrade fx on the selected release channel" },
         .{ .kind = .acp, .usage = "acp" },
         .{ .kind = .help, .usage = "help" },
     } },

@@ -16,7 +16,12 @@ pub const State = enum(u8) {
     downloading = 3,
     ready = 4,
     failed = 5,
+    available = 6,
 };
+
+fn isTerminalState(state: State) bool {
+    return state == .ready or state == .available;
+}
 
 pub const RelaunchRequest = struct {
     executable_path_buf: [std.fs.max_path_bytes]u8 = undefined,
@@ -58,11 +63,16 @@ pub const AutoUpgrade = struct {
     previous_revision_len: u8 = 0,
 
     selected_channel: update_target.Channel = .stable,
+    install_updates: bool = true,
 
     relaunch_request: ?RelaunchRequest = null,
 
     pub fn configure_channel(self: *AutoUpgrade, selected: update_target.Channel) void {
         self.selected_channel = selected;
+    }
+
+    pub fn configure_install_updates(self: *AutoUpgrade, enabled: bool) void {
+        self.install_updates = enabled;
     }
 
     pub fn channel(self: *const AutoUpgrade) update_target.Channel {
@@ -126,6 +136,11 @@ pub const AutoUpgrade = struct {
                 return std.fmt.bufPrint(buf, "upgrading to {s}...", .{ver}) catch "";
             },
             .ready => return "update ready: ctrl+g to reload",
+            .available => {
+                var ver_buf: [32]u8 = undefined;
+                const ver = self.getLatestVersion(&ver_buf);
+                return std.fmt.bufPrint(buf, "upstream fx {s} available", .{ver}) catch "";
+            },
             .failed => return "upgrade failed",
             else => return "",
         }
@@ -182,12 +197,12 @@ pub const AutoUpgrade = struct {
         self.sleepInterruptible(initial_delay_ms);
 
         while (!self.should_stop.load(.acquire)) {
-            if (self.getState() == .ready) return;
+            if (isTerminalState(self.getState())) return;
             self.setState(.checking);
             self.runOnce(alloc, current);
 
             const post_state = self.getState();
-            if (post_state == .ready) return;
+            if (isTerminalState(post_state)) return;
 
             if (post_state != .failed) self.setState(.waiting);
             self.sleepInterruptible(check_interval_ms);
@@ -203,18 +218,31 @@ pub const AutoUpgrade = struct {
         var target = helpers.fetchTarget(alloc, self.selected_channel, cdn_base) catch return;
         defer target.deinit(alloc);
 
-        if (!target.shouldInstall(current)) return;
-
-        var label_buf: [64]u8 = undefined;
-        const label = target.writeDisplayLabel(&label_buf) catch return;
-        self.setLatestVersion(label);
-        self.setState(.downloading);
+        if (!self.prepareTarget(current, target)) return;
 
         self.downloadAndInstall(alloc, target, cdn_base) catch {
             self.setState(.failed);
             return;
         };
         self.setState(.ready);
+    }
+
+    fn prepareTarget(
+        self: *AutoUpgrade,
+        current: update_target.CurrentBuild,
+        target: update_target.Target,
+    ) bool {
+        if (!target.shouldInstall(current)) return false;
+
+        var label_buf: [64]u8 = undefined;
+        const label = target.writeDisplayLabel(&label_buf) catch return false;
+        self.setLatestVersion(label);
+        if (!self.install_updates) {
+            self.setState(.available);
+            return false;
+        }
+        self.setState(.downloading);
+        return true;
     }
 
     const InstallError = error{
@@ -298,6 +326,44 @@ test "selected release channel is owned by the upgrade runtime" {
 
     au.configure_channel(.dev);
     try std.testing.expectEqual(update_target.Channel.dev, au.channel());
+}
+
+test "check-only policy reports an outdated fork without installing" {
+    const alloc = std.testing.allocator;
+    var target = try update_target.Target.initStable(alloc, "v0.3.0");
+    defer target.deinit(alloc);
+
+    var au = AutoUpgrade{};
+    au.configure_install_updates(false);
+    const should_install = au.prepareTarget(.{
+        .channel = .stable,
+        .version = "0.2.0",
+        .revision = "0123456789ab",
+    }, target);
+
+    try std.testing.expect(!should_install);
+    try std.testing.expectEqual(State.available, au.getState());
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "upstream fx 0.3.0 available",
+        au.statusLabel(&buf),
+    );
+}
+
+test "install policy preserves the standard auto-upgrade path" {
+    const alloc = std.testing.allocator;
+    var target = try update_target.Target.initStable(alloc, "v0.3.0");
+    defer target.deinit(alloc);
+
+    var au = AutoUpgrade{};
+    const should_install = au.prepareTarget(.{
+        .channel = .stable,
+        .version = "0.2.0",
+        .revision = "0123456789ab",
+    }, target);
+
+    try std.testing.expect(should_install);
+    try std.testing.expectEqual(State.downloading, au.getState());
 }
 
 test "development build paths disable auto upgrade" {
