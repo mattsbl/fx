@@ -32,7 +32,16 @@ pub fn Runtime(comptime App: type) type {
 
             if (comptime @hasField(App, "upgrader")) {
                 if (comptime @hasDecl(@TypeOf(app.upgrader), "takeRenderDirty")) {
-                    if (app.upgrader.takeRenderDirty()) requestFooterRender(app);
+                    if (!app.upgrader.takeRenderDirty()) return;
+                    if (comptime @hasDecl(@TypeOf(app.upgrader), "statusLabel")) {
+                        if (app.upgrader.getState() == .available) {
+                            var label_buf: [64]u8 = undefined;
+                            const label = app.upgrader.statusLabel(&label_buf);
+                            writeUpgradeNotice(app, .neutral, label) catch {};
+                            return;
+                        }
+                    }
+                    requestFooterRender(app);
                 }
             }
         }
@@ -189,6 +198,11 @@ const TestUpgrader = struct {
         const dirty = self.render_dirty;
         self.render_dirty = false;
         return dirty;
+    }
+
+    fn statusLabel(self: *TestUpgrader, _: []u8) []const u8 {
+        if (self.state == .available) return "upstream fx 0.3.0 available";
+        return "";
     }
 };
 
@@ -403,6 +417,27 @@ test "app_upgrade_runtime consumes upgrade render facts" {
 
     Runtime(TestApp).collectUpgradeFacts(&app);
     try std.testing.expectEqual(@as(usize, 1), app.shell.render_requests.footer_count);
+}
+
+test "app_upgrade_runtime announces an outdated fork once" {
+    var app = TestApp{ .alloc = std.testing.allocator };
+    defer app.deinit();
+    app.upgrader.state = .available;
+    app.upgrader.render_dirty = true;
+
+    Runtime(TestApp).collectUpgradeFacts(&app);
+
+    try std.testing.expectEqualStrings(
+        "upstream fx 0.3.0 available",
+        app.notices.items,
+    );
+    try std.testing.expectEqual(@as(usize, 1), app.shell.render_requests.footer_count);
+
+    Runtime(TestApp).collectUpgradeFacts(&app);
+    try std.testing.expectEqualStrings(
+        "upstream fx 0.3.0 available",
+        app.notices.items,
+    );
 }
 
 test "app_upgrade_runtime skips upgrade render facts when disabled" {

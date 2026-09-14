@@ -163,6 +163,7 @@ pub const Config = struct {
     version: []const u8 = "",
     revision: []const u8 = "",
     build_channel: update_target.Channel = .stable,
+    upgrade_enabled: bool = true,
     auth_mode: credentials.AuthMode = .local,
     command_catalog: CommandCatalog,
     default_model: []const u8,
@@ -1698,6 +1699,21 @@ fn runNonInteractiveWithDeps(
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .upgrade, "upgrade", err, rest);
                 return .handled_failure;
             };
+            if (!cfg.upgrade_enabled) {
+                const snapshot = output_contracts.UpgradeSnapshot{
+                    .current = cfg.version,
+                    .latest = "",
+                    .status = .failed,
+                    .err_message = "upgrade is disabled in this fork",
+                };
+                const text = try snapshot.render(alloc, opts.format);
+                defer alloc.free(text);
+                switch (opts.format) {
+                    .text => try writeStderr(deps, text),
+                    .json => try writeJsonLine(deps, text),
+                }
+                return .handled_failure;
+            }
 
             var startup = deps.load_startup_state_without_credentials(
                 alloc,
@@ -5191,6 +5207,42 @@ test "runIfRequested credits failures use nonzero text and json contracts" {
         json_capture.stdout.written(),
     );
     try std.testing.expectEqualStrings("", json_capture.stderr.written());
+}
+
+test "runIfRequested disables upgrade for fork builds" {
+    var text_capture = CaptureOutput.init(std.testing.allocator);
+    defer text_capture.deinit();
+    var text_cfg = testConfig();
+    text_cfg.upgrade_enabled = false;
+
+    const text_result = try runIfRequestedWithDeps(
+        std.testing.allocator,
+        &.{@constCast("upgrade")},
+        text_cfg,
+        text_capture.deps(),
+    );
+    try std.testing.expectEqual(RunResult.handled_failure, text_result);
+    try std.testing.expectEqualStrings(
+        "error: upgrade is disabled in this fork\n",
+        text_capture.stderr.written(),
+    );
+
+    var json_capture = CaptureOutput.init(std.testing.allocator);
+    defer json_capture.deinit();
+    var json_cfg = testConfig();
+    json_cfg.upgrade_enabled = false;
+
+    const json_result = try runIfRequestedWithDeps(
+        std.testing.allocator,
+        &.{ @constCast("upgrade"), @constCast("--json") },
+        json_cfg,
+        json_capture.deps(),
+    );
+    try std.testing.expectEqual(RunResult.handled_failure, json_result);
+    try std.testing.expectEqualStrings(
+        "{\"kind\":\"upgrade\",\"error\":\"upgrade is disabled in this fork\"}\n",
+        json_capture.stdout.written(),
+    );
 }
 
 test "runIfRequested local json success appends exactly one newline" {

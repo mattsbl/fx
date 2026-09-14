@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 const io_mod = @import("core/shared/io.zig");
 
 pub const version = "0.0.10";
+pub const fork_build = true;
 
 const app_lifecycle = @import("core/app/app_lifecycle.zig");
 const provider_runtime = @import("core/app/provider_runtime.zig");
@@ -697,6 +698,7 @@ const App = struct {
             app.auto_upgrade_enabled = false;
         }
         if (comptime !host_profile.auto_upgrade) app.auto_upgrade_enabled = false;
+        app.upgrader.configure_install_updates(!fork_build);
         try HostConfigAppRuntime.restore(&app, builtin_modes.registry);
         SessionAppRuntime.syncTerminalTitle(&app);
         return app;
@@ -3720,6 +3722,7 @@ fn fullEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
         .version = version,
         .revision = build_options.git_commit,
         .build_channel = compiled_update_channel,
+        .upgrade_enabled = !fork_build,
         .auth_mode = auth_mode,
         .command_catalog = builtin_commands.top_level_registry,
         .default_model = builtin_gateway.default_model,
@@ -3759,6 +3762,7 @@ fn localEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
         .version = version,
         .revision = build_options.git_commit,
         .build_channel = compiled_update_channel,
+        .upgrade_enabled = !fork_build,
         .auth_mode = auth_mode,
         .command_catalog = builtin_commands.top_level_registry,
         .default_model = builtin_gateway.default_model,
@@ -3798,6 +3802,7 @@ fn emptyEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
         .version = version,
         .revision = build_options.git_commit,
         .build_channel = compiled_update_channel,
+        .upgrade_enabled = !fork_build,
         .auth_mode = auth_mode,
         .command_catalog = builtin_commands.top_level_registry,
         .default_model = "",
