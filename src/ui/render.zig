@@ -194,7 +194,7 @@ pub fn welcomeMessage(alloc: std.mem.Allocator) ![]u8 {
     );
     return std.fmt.allocPrint(
         alloc,
-        "{s}𝒇x{s}{s} {s} · Run /help for commands" ++ reset_style ++ "\n\n",
+        "{s}𝒇x{s}{s} {s} [fork] · Run /help for commands" ++ reset_style ++ "\n\n",
         .{ subtitle_style, reset_style, dim_style, build_label },
     );
 }
@@ -853,7 +853,7 @@ test "welcomeMessage shows version and help hint" {
     defer std.testing.allocator.free(message);
 
     try std.testing.expect(std.mem.find(u8, message, "𝒇x") != null);
-    try std.testing.expect(std.mem.find(u8, message, main.version) != null);
+    try std.testing.expect(std.mem.find(u8, message, main.version ++ " [fork]") != null);
     try std.testing.expect(std.mem.find(u8, message, "/help") != null);
 }
 
@@ -871,7 +871,7 @@ test "welcomeMessage keeps only the app name bright" {
     );
     const expected = try std.fmt.allocPrint(
         std.testing.allocator,
-        "{s}𝒇x{s}{s} {s} · Run /help for commands" ++ reset_style ++ "\n\n",
+        "{s}𝒇x{s}{s} {s} [fork] · Run /help for commands" ++ reset_style ++ "\n\n",
         .{ subtitle_style, reset_style, dim_style, build_label },
     );
     defer std.testing.allocator.free(expected);
