@@ -775,6 +775,146 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
   );
 
   test(
+    "profile lockout blocks Fast mode and FX_FAST_MODE temporarily overrides it",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "fx-fast-lockout-"));
+      const gateway = startFakeGateway(
+        [
+          fakeGatewayFinalText("Fast mode remained locked out"),
+          fakeGatewayFinalText("Fast mode temporarily enabled"),
+        ],
+        {
+          models: [{
+            id: "openai/gpt-5.6-sol",
+            type: "language",
+            released: 1,
+            tags: ["reasoning", "tool-use"],
+            reasoning_options: [{ type: "effort", values: ["max"] }],
+            fast_options: [{ type: "toggle" }],
+            pricing: {
+              service_tiers: {
+                priority: { input: "0.1", output: "0.2" },
+              },
+            },
+          }],
+        },
+      );
+      try {
+        const home = join(root, "home");
+        const workspace = join(root, "workspace");
+        const stderrPath = join(root, "stderr.log");
+        const settingsPath = join(home, ".fx", "settings.json");
+        mkdirSync(join(home, ".fx"), { recursive: true, mode: 0o700 });
+        mkdirSync(workspace);
+        writeFileSync(
+          settingsPath,
+          JSON.stringify({
+            model: "openai/gpt-5.6-sol",
+            fast_mode: true,
+            fast_mode_model_bound: true,
+            fast_mode_lockout: true,
+          }) + "\n",
+          { mode: 0o600 },
+        );
+
+        session = await TmuxSession.create({
+          cwd: realpathSync(workspace),
+          env: {
+            ...NO_AUTH,
+            AI_GATEWAY_API_KEY: "fake-fast-disabled-key",
+            HOME: home,
+            FX_GATEWAY_BASE_URL: gateway.baseUrl,
+            FX_GATEWAY_CHAT_URL: gateway.chatUrl,
+            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+          },
+          stderrPath,
+        });
+        const startup = await session.waitForText("gpt-5.6-sol", TIMEOUT);
+        expect(startup).not.toContain("⚡︎");
+
+        await session.sendText("/settings");
+        const settings = await session.waitForText("←→ change", TIMEOUT);
+        expect(settings).not.toContain("Fast mode");
+        await session.sendKeys("Escape");
+        await session.waitForStableComposer(TIMEOUT);
+
+        await session.sendLiteral("/model sol");
+        await session.waitForText("openai/gpt-5.6-sol", TIMEOUT);
+        await session.sendKeys("Enter");
+        await session.waitForText("default", TIMEOUT);
+        await session.sendKeys("Enter");
+        const selected = await session.waitForStableComposer(TIMEOUT);
+        expect(selected).not.toContain("normal");
+        expect(selected).not.toContain("⚡︎");
+
+        await session.sendText("/fast");
+        await session.waitForText(
+          "Fast mode is locked out by your profile settings.",
+          TIMEOUT,
+        );
+
+        await session.sendText("Confirm the mode.");
+        await session.waitForText("Fast mode remained locked out", TIMEOUT);
+        expect(gateway.requests).toHaveLength(1);
+        expect(
+          JSON.parse(gateway.requests[0]!.body).providerOptions?.gateway?.speed,
+        ).not.toBe("fast");
+        expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toMatchObject({
+          fast_mode: true,
+          fast_mode_model_bound: true,
+          fast_mode_lockout: true,
+        });
+
+        await session.sendText("/quit");
+        await session.waitForSessionEnd(TIMEOUT);
+        session = null;
+        expect(readFileSync(stderrPath, "utf8")).toBe("");
+
+        session = await TmuxSession.create({
+          cwd: realpathSync(workspace),
+          env: {
+            ...NO_AUTH,
+            AI_GATEWAY_API_KEY: "fake-fast-lockout-override-key",
+            HOME: home,
+            FX_FAST_MODE: "true",
+            FX_GATEWAY_BASE_URL: gateway.baseUrl,
+            FX_GATEWAY_CHAT_URL: gateway.chatUrl,
+            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+          },
+          stderrPath,
+        });
+        await session.waitForText("gpt-5.6-sol", TIMEOUT);
+        await session.sendText("/fast");
+        await session.waitForText(
+          "Fast mode is forced on by FX_FAST_MODE.",
+          TIMEOUT,
+        );
+
+        await session.sendText("Confirm the temporary mode.");
+        await session.waitForText("Fast mode temporarily enabled", TIMEOUT);
+        expect(gateway.requests).toHaveLength(2);
+        expect(
+          JSON.parse(gateway.requests[1]!.body).providerOptions?.gateway?.speed,
+        ).toBe("fast");
+        expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toMatchObject({
+          fast_mode: true,
+          fast_mode_model_bound: true,
+          fast_mode_lockout: true,
+        });
+
+        await session.sendText("/quit");
+        await session.waitForSessionEnd(TIMEOUT);
+        session = null;
+        expect(readFileSync(stderrPath, "utf8")).toBe("");
+      } finally {
+        gateway.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
+
+  test(
     "settings reasoning effort changes without mutating the selected model",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "fx-settings-effort-"));

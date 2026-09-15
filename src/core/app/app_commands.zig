@@ -3725,6 +3725,10 @@ pub fn settingsCatalogSnapshot(app: anytype) settings_catalog.Snapshot {
     if (comptime provider_runtime.supported(App)) snapshot.model = provider_runtime.model(app);
     if (comptime @hasField(App, "effort")) snapshot.effort = app.effort.displayLabel();
     if (comptime @hasField(App, "fast_mode")) snapshot.fast_mode = app.fast_mode;
+    if (comptime @hasField(App, "fast_mode_lockout")) snapshot.fast_mode_allowed = !app.fast_mode_lockout;
+    if (comptime @hasField(App, "fast_mode_override")) {
+        if (app.fast_mode_override != null) snapshot.fast_mode_allowed = false;
+    }
     if (comptime @hasDecl(App, "resolvedModelCapabilities") and provider_runtime.supported(App)) {
         const capabilities = app.resolvedModelCapabilities(provider_runtime.model(app));
         snapshot.reasoning_efforts = capabilities.reasoning_efforts;

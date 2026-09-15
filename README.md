@@ -43,6 +43,16 @@ fx ask "explain the changes in this repository"
 
 Inside the shell, run `/help` to browse interactive commands.
 
+To prevent Fast mode from being enabled accidentally, add the profile-only lockout to `~/.fx/settings.json`:
+
+```json
+{
+  "fast_mode_lockout": true
+}
+```
+
+While locked, fx keeps Fast mode off, omits it from `/model` and `/settings`, and rejects `/fast` without changing saved Fast preferences. Use `FX_FAST_MODE=true fx` to bypass the lockout and enable Fast mode for one process, or remove the setting (or set it to `false`) to restore the controls globally.
+
 ## Embed fx
 
 fx builds as a native binary or WebAssembly. Applications embedding fx can provide network transport, session storage, configuration, permission handling, and terminal I/O.

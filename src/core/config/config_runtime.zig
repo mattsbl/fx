@@ -48,6 +48,7 @@ pub const Settings = struct {
     first_call_tool_choice: ?types.ToolChoice = null,
     context: ?bool = null,
     fast_mode: ?bool = null,
+    fast_mode_lockout: ?bool = null,
     fast_mode_model_bound: ?bool = null,
     slash_menu_categories: ?bool = null,
     collapse_tool_calls: ?bool = null,
@@ -609,6 +610,7 @@ fn isProfileOnlySettingKey(key: []const u8) bool {
         "grok_model",
         "effort",
         "fast_mode",
+        "fast_mode_lockout",
         "fast_mode_model_bound",
         "slash_menu_categories",
         "collapse_tool_calls",
@@ -1418,6 +1420,11 @@ fn parseProfileOnlyFields(
         settings.fast_mode = value.bool;
     }
 
+    if (root.object.get("fast_mode_lockout")) |lockout_value| {
+        if (lockout_value != .bool) return error.InvalidFastModeLockoutType;
+        settings.fast_mode_lockout = lockout_value.bool;
+    }
+
     if (root.object.get("fast_mode_model_bound")) |bound_value| {
         if (bound_value != .bool) return error.InvalidFastModeBindingType;
         settings.fast_mode_model_bound = bound_value.bool;
@@ -1557,6 +1564,7 @@ fn mergeSettings(target: *Settings, incoming: *Settings, alloc: Allocator) void 
     if (incoming.first_call_tool_choice) |value| target.first_call_tool_choice = value;
     if (incoming.context) |value| target.context = value;
     if (incoming.fast_mode) |value| target.fast_mode = value;
+    if (incoming.fast_mode_lockout) |value| target.fast_mode_lockout = value;
     if (incoming.fast_mode_model_bound) |value| target.fast_mode_model_bound = value;
     if (incoming.slash_menu_categories) |value| target.slash_menu_categories = value;
     if (incoming.collapse_tool_calls) |value| target.collapse_tool_calls = value;
@@ -2986,12 +2994,12 @@ test "project profile-only settings are ignored and diagnosed by key" {
     try writeFixtureFile(
         tmp.dir,
         "home/.fx/settings.json",
-        "{\"model\":\"profile/model\",\"permission_mode\":\"auto\",\"permission\":{\"bash\":{\"profile *\":\"allow\"}},\"prompt_history\":{\"enabled\":true},\"statusLine\":{\"sandbox\":true,\"context\":false},\"first_call_tool_choice\":\"none\",\"auto_upgrade\":false,\"update_channel\":\"dev\",\"fast_mode\":false,\"input_appearance\":\"tint\",\"maxxing_mode\":\"minimal\",\"slash_menu_categories\":false,\"effort\":\"high\",\"output_level\":\"quiet\",\"startup_scrollback\":false}\n",
+        "{\"model\":\"profile/model\",\"permission_mode\":\"auto\",\"permission\":{\"bash\":{\"profile *\":\"allow\"}},\"prompt_history\":{\"enabled\":true},\"statusLine\":{\"sandbox\":true,\"context\":false},\"first_call_tool_choice\":\"none\",\"auto_upgrade\":false,\"update_channel\":\"dev\",\"fast_mode\":false,\"fast_mode_lockout\":true,\"input_appearance\":\"tint\",\"maxxing_mode\":\"minimal\",\"slash_menu_categories\":false,\"effort\":\"high\",\"output_level\":\"quiet\",\"startup_scrollback\":false}\n",
     );
     try writeFixtureFile(
         tmp.dir,
         "workspace/.fx.json",
-        "{\"model\":\"project/model\",\"permission_mode\":\"ask\",\"permission\":\"deny\",\"prompt_history\":{\"enabled\":false},\"statusLine\":{\"sandbox\":false,\"context\":true},\"skill_match_fuzzy\":true,\"first_call_tool_choice\":\"auto\",\"auto_upgrade\":true,\"update_channel\":\"stable\",\"fast_mode\":true,\"input_appearance\":\"lines\",\"maxxing_mode\":\"normal\",\"slash_menu_categories\":true,\"effort\":\"low\",\"output_level\":\"normal\",\"startup_scrollback\":true,\"max_agent_steps\":17}\n",
+        "{\"model\":\"project/model\",\"permission_mode\":\"ask\",\"permission\":\"deny\",\"prompt_history\":{\"enabled\":false},\"statusLine\":{\"sandbox\":false,\"context\":true},\"skill_match_fuzzy\":true,\"first_call_tool_choice\":\"auto\",\"auto_upgrade\":true,\"update_channel\":\"stable\",\"fast_mode\":true,\"fast_mode_lockout\":false,\"input_appearance\":\"lines\",\"maxxing_mode\":\"normal\",\"slash_menu_categories\":true,\"effort\":\"low\",\"output_level\":\"normal\",\"startup_scrollback\":true,\"max_agent_steps\":17}\n",
     );
 
     const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
@@ -3011,13 +3019,14 @@ test "project profile-only settings are ignored and diagnosed by key" {
     try std.testing.expectEqual(false, result.settings.auto_upgrade.?);
     try std.testing.expectEqual(update_target.Channel.dev, result.settings.update_channel.?);
     try std.testing.expectEqual(false, result.settings.fast_mode.?);
+    try std.testing.expectEqual(true, result.settings.fast_mode_lockout.?);
     try std.testing.expectEqual(false, result.settings.slash_menu_categories.?);
     try std.testing.expectEqual(types.ReasoningEffort.literal("high"), result.settings.effort.?);
     try std.testing.expectEqual(false, result.settings.startup_scrollback.?);
     try std.testing.expectEqual(@as(usize, 1), result.settings.permission_rules.rules.len);
     try expectPermissionRule(result.settings.permission_rules.rules[0], "bash", "profile *", .allow);
 
-    try std.testing.expectEqual(@as(usize, 13), result.diagnostics.len);
+    try std.testing.expectEqual(@as(usize, 14), result.diagnostics.len);
     inline for (&.{
         "model",
         "permission_mode",
@@ -3029,6 +3038,7 @@ test "project profile-only settings are ignored and diagnosed by key" {
         "auto_upgrade",
         "update_channel",
         "fast_mode",
+        "fast_mode_lockout",
         "slash_menu_categories",
         "effort",
         "startup_scrollback",

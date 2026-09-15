@@ -1067,6 +1067,14 @@ pub fn CompletionRuntime(comptime App: type) type {
 
         const navigatePickerOptions = list_window.advanceSelection;
 
+        fn fastModeAllowed(app: *const App) bool {
+            if (comptime @hasField(App, "fast_mode_override")) {
+                if (app.fast_mode_override != null) return false;
+            }
+            if (comptime @hasField(App, "fast_mode_lockout")) return !app.fast_mode_lockout;
+            return true;
+        }
+
         fn setModelComposerText(app: *App, comptime fmt: []const u8, args: anytype) !void {
             const text = try std.fmt.allocPrint(app.alloc, fmt, args);
             defer app.alloc.free(text);
@@ -1090,7 +1098,7 @@ pub fn CompletionRuntime(comptime App: type) type {
                         app.alloc,
                         model,
                         model_capabilities.reasoningEffortIndex(capabilities, effort),
-                        capabilities.supports_fast_mode,
+                        capabilities.supports_fast_mode and fastModeAllowed(app),
                         .effort,
                     );
                 },
@@ -1125,7 +1133,7 @@ pub fn CompletionRuntime(comptime App: type) type {
                     defer app.alloc.free(model);
                     const effort = exactEffortCompletion(app, query.query) orelse return false;
                     const capabilities = model_capabilities.resolveForApp(App, app, model);
-                    if (!capabilities.supports_fast_mode) return false;
+                    if (!capabilities.supports_fast_mode or !fastModeAllowed(app)) return false;
 
                     try setModelComposerText(app, "/model {s} {s} ", .{ model, effort.label() });
                     try app.input_runtime.picker.beginModelPickerFlow(app.alloc, model, model_capabilities.reasoningEffortIndex(capabilities, effort), true, .fast);
@@ -1169,7 +1177,7 @@ pub fn CompletionRuntime(comptime App: type) type {
                         return true;
                     };
                     const capabilities = model_capabilities.resolveForApp(App, app, model);
-                    if (capabilities.supports_fast_mode) {
+                    if (capabilities.supports_fast_mode and fastModeAllowed(app)) {
                         try setModelComposerText(app, "/model {s} {s} ", .{ model, effort.label() });
                         try app.input_runtime.picker.beginModelPickerFlow(app.alloc, model, model_capabilities.reasoningEffortIndex(capabilities, effort), true, .fast);
                     } else {
@@ -1216,7 +1224,7 @@ pub fn CompletionRuntime(comptime App: type) type {
         fn beginModelPickerOptions(app: *App, model: []const u8) !void {
             const capabilities = model_capabilities.resolveForApp(App, app, model);
             const supports_effort = capabilities.reasoning_efforts.len > 0;
-            const supports_fast = capabilities.supports_fast_mode;
+            const supports_fast = capabilities.supports_fast_mode and fastModeAllowed(app);
 
             if (!supports_effort and !supports_fast) {
                 try session_commands.Commands(App).selectModelFromPicker(app, model, app.effort, app.fast_mode);
@@ -1558,6 +1566,8 @@ const InlineCompletionTestApp = struct {
 const ModelPickerCompletionTestApp = struct {
     alloc: std.mem.Allocator,
     input_runtime: core_input_runtime.Runtime = .{},
+    fast_mode_lockout: bool = false,
+    fast_mode_override: ?bool = null,
 
     fn deinit(self: *ModelPickerCompletionTestApp) void {
         self.input_runtime.deinit(self.alloc);
@@ -1569,6 +1579,7 @@ const ModelPickerCompletionTestApp = struct {
                 types.ReasoningEffort.literal("future-tier"),
                 types.ReasoningEffort.literal("high"),
             }),
+            .supports_fast_mode = true,
         };
     }
 };
@@ -1594,6 +1605,22 @@ test "model picker effort completion labels survive capability resolution" {
     try std.testing.expectEqualStrings("default", values[0].displayLabel());
     try std.testing.expectEqualStrings("future-tier", values[1].displayLabel());
     try std.testing.expectEqualStrings("high", values[2].displayLabel());
+}
+
+test "model picker fast option respects profile lockout" {
+    const alloc = std.testing.allocator;
+    const rt = CompletionRuntime(ModelPickerCompletionTestApp);
+    var app = ModelPickerCompletionTestApp{
+        .alloc = alloc,
+        .fast_mode_lockout = true,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!rt.fastModeAllowed(&app));
+    app.fast_mode_lockout = false;
+    try std.testing.expect(rt.fastModeAllowed(&app));
+    app.fast_mode_override = true;
+    try std.testing.expect(!rt.fastModeAllowed(&app));
 }
 
 test "inline slash completion uses the shared visible suffix and acceptance path" {
