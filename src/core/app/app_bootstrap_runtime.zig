@@ -264,6 +264,8 @@ pub fn Runtime(comptime App: type) type {
                 try provider_runtime.replaceModel(app, selected_model);
             }
             const active_model = provider_runtime.model(app);
+            const effective_fast_mode = startup.fast_mode_override orelse
+                (startup.fast_mode and !startup.fast_mode_lockout);
             try deps.configure_session_preferences(
                 app,
                 startup.provider,
@@ -280,10 +282,16 @@ pub fn Runtime(comptime App: type) type {
             app.worker.agent_turn_settings.max_tool_result_bytes = startup.max_tool_result_bytes;
             if (comptime @hasField(App, "context_limits")) app.context_limits = startup.context_limits;
             app.worker.agent_turn_settings.first_call_tool_choice = startup.first_call_tool_choice;
-            app.worker.agent_turn_settings.fast_mode = startup.fast_mode;
+            app.worker.agent_turn_settings.fast_mode = effective_fast_mode;
             app.worker.agent_turn_settings.effort = startup.effort;
             app.context_enabled = startup.context_enabled;
-            app.fast_mode = startup.fast_mode;
+            app.fast_mode = effective_fast_mode;
+            if (comptime @hasField(App, "fast_mode_lockout")) {
+                app.fast_mode_lockout = startup.fast_mode_lockout;
+            }
+            if (comptime @hasField(App, "fast_mode_override")) {
+                app.fast_mode_override = startup.fast_mode_override;
+            }
             app.input_runtime.slash_menu_categories = startup.slash_menu_categories;
             app.shell.collapse_tool_calls = startup.collapse_tool_calls;
             app.auto_upgrade_enabled = startup.auto_upgrade;

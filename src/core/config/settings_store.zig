@@ -101,6 +101,7 @@ pub const UserSettingsPatch = struct {
     yolo_acknowledged: ?bool = null,
     effort: ?types.ReasoningEffort = null,
     fast_mode: ?bool = null,
+    preserve_fast_mode_model_bound: bool = false,
     slash_menu_categories: ?bool = null,
     collapse_tool_calls: ?bool = null,
     update_channel: ?update_target.Channel = null,
@@ -1025,11 +1026,13 @@ fn applyUserPatchToRoot(
     if (patch.yolo_acknowledged) |value| application.changed = try putBool(arena, &root.object, "yolo_acknowledged", value) or application.changed;
     if (patch.effort) |value| application.changed = try putString(arena, &root.object, "effort", value.label()) or application.changed;
     if (patch.fast_mode) |value| application.changed = try putBool(arena, &root.object, "fast_mode", value) or application.changed;
-    if (patch.model_preference != null and patch.fast_mode != null) {
-        application.changed = try putBool(arena, &root.object, "fast_mode_model_bound", true) or application.changed;
-    } else if ((patch.model_preference != null or patch.fast_mode != null) and root.object.contains("fast_mode_model_bound")) {
-        _ = root.object.orderedRemove("fast_mode_model_bound");
-        application.changed = true;
+    if (!patch.preserve_fast_mode_model_bound) {
+        if (patch.model_preference != null and patch.fast_mode != null) {
+            application.changed = try putBool(arena, &root.object, "fast_mode_model_bound", true) or application.changed;
+        } else if ((patch.model_preference != null or patch.fast_mode != null) and root.object.contains("fast_mode_model_bound")) {
+            _ = root.object.orderedRemove("fast_mode_model_bound");
+            application.changed = true;
+        }
     }
     if (patch.slash_menu_categories) |value| application.changed = try putBool(arena, &root.object, "slash_menu_categories", value) or application.changed;
     if (patch.collapse_tool_calls) |value| application.changed = try putBool(arena, &root.object, "collapse_tool_calls", value) or application.changed;

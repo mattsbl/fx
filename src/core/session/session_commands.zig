@@ -688,11 +688,52 @@ pub fn Commands(comptime App: type) type {
             try app.writeDomainNotice(.{ .topic = "allowlist", .tone = .neutral, .body = msg }, true);
         }
 
+        fn fastModeLockedOut(app: *const App) bool {
+            if (comptime @hasField(App, "fast_mode_lockout")) return app.fast_mode_lockout;
+            return false;
+        }
+
+        fn fastModeOverride(app: *const App) ?bool {
+            if (comptime @hasField(App, "fast_mode_override")) return app.fast_mode_override;
+            return null;
+        }
+
+        fn fastModeMutable(app: *const App) bool {
+            return fastModeOverride(app) == null and !fastModeLockedOut(app);
+        }
+
         pub fn toggleFast(app: *App) !void {
             try toggleFastForModel(app, provider_runtime.model(app), true);
         }
 
         fn toggleFastForModel(app: *App, model: []const u8, announce: bool) !void {
+            if (fastModeOverride(app)) |forced| {
+                if (app.fast_mode != forced) try applyFastMode(app, forced, false, false);
+                if (announce) {
+                    try app.writeDomainNotice(.{
+                        .topic = "fast",
+                        .tone = .neutral,
+                        .body = if (forced)
+                            "Fast mode is forced on by FX_FAST_MODE."
+                        else
+                            "Fast mode is forced off by FX_FAST_MODE.",
+                    }, true);
+                }
+                app.shell.render_requests.request(.footer);
+                return;
+            }
+            if (fastModeLockedOut(app)) {
+                if (app.fast_mode) try applyFastMode(app, false, false, false);
+                if (announce) {
+                    try app.writeDomainNotice(.{
+                        .topic = "fast",
+                        .tone = .neutral,
+                        .body = "Fast mode is locked out by your profile settings.",
+                    }, true);
+                }
+                app.shell.render_requests.request(.footer);
+                return;
+            }
             if (app.fast_mode) {
                 try applyFastMode(app, false, announce, true);
                 return;
@@ -714,7 +755,7 @@ pub fn Commands(comptime App: type) type {
 
         fn applyFastMode(app: *App, enabled: bool, announce: bool, persist: bool) !void {
             const previous = app.fast_mode;
-            app.fast_mode = enabled;
+            app.fast_mode = fastModeOverride(app) orelse (enabled and !fastModeLockedOut(app));
             app.worker.syncQueuedPromptFastMode(app.fast_mode);
             debug_trace.logf(
                 "session",
@@ -727,7 +768,7 @@ pub fn Commands(comptime App: type) type {
                 },
             );
 
-            if (persist) {
+            if (persist and fastModeMutable(app)) {
                 try persistPreferenceTargets(
                     app,
                     .{
@@ -782,11 +823,19 @@ pub fn Commands(comptime App: type) type {
                 try applyEffort(app, effort, false, false);
                 patch.effort = effort;
             }
-            const selected_fast_mode = capabilities.supports_fast_mode and fast_mode;
-            if (selected_fast_mode != app.fast_mode) {
-                try applyFastMode(app, selected_fast_mode, false, false);
+            if (!fastModeMutable(app)) {
+                patch.preserve_fast_mode_model_bound = true;
+                const effective_fast_mode = fastModeOverride(app) orelse false;
+                if (app.fast_mode != effective_fast_mode) {
+                    try applyFastMode(app, effective_fast_mode, false, false);
+                }
+            } else {
+                const selected_fast_mode = capabilities.supports_fast_mode and fast_mode;
+                if (selected_fast_mode != app.fast_mode) {
+                    try applyFastMode(app, selected_fast_mode, false, false);
+                }
+                patch.fast_mode = selected_fast_mode;
             }
-            patch.fast_mode = selected_fast_mode;
             try persistPreferenceTargets(app, patch, "model picker", false);
         }
 
@@ -1044,16 +1093,25 @@ pub fn Commands(comptime App: type) type {
         fn setResolvedModel(app: *App, resolved: []const u8, announce: bool) !void {
             const model_changed = !std.mem.eql(u8, provider_runtime.model(app), resolved);
             try setResolvedModelRuntime(app, resolved, announce);
-            if (model_changed and app.fast_mode) {
-                try applyFastMode(app, false, false, false);
+            var patch = app_session_runtime.SessionPreferencePatch{
+                .provider = provider_runtime.provider(app),
+                .model = resolved,
+            };
+            if (fastModeMutable(app)) {
+                if (model_changed and app.fast_mode) {
+                    try applyFastMode(app, false, false, false);
+                }
+                patch.fast_mode = app.fast_mode;
+            } else {
+                patch.preserve_fast_mode_model_bound = true;
+                const effective_fast_mode = fastModeOverride(app) orelse false;
+                if (app.fast_mode != effective_fast_mode) {
+                    try applyFastMode(app, effective_fast_mode, false, false);
+                }
             }
             try persistPreferenceTargets(
                 app,
-                .{
-                    .provider = provider_runtime.provider(app),
-                    .model = resolved,
-                    .fast_mode = app.fast_mode,
-                },
+                patch,
                 "model",
                 !announce,
             );
@@ -1662,6 +1720,8 @@ const FakeApp = struct {
     transcript: std.ArrayList(u8) = .empty,
     agent_step_limit: usize = 24,
     fast_mode: bool = false,
+    fast_mode_lockout: bool = false,
+    fast_mode_override: ?bool = null,
     effort: types.ReasoningEffort = .auto,
     cached_ids: ?[]const []const u8 = null,
     gateway_metadata_model: ?[]const u8 = null,
@@ -2666,6 +2726,62 @@ test "session_commands toggleFast reports unsupported model and redraws footer" 
     try std.testing.expect(app.worker.synced_fast_mode == null);
     try std.testing.expectEqual(@as(usize, 0), app.worker.fast_sync_count);
     try expectTranscriptContains(&app, "* fast: This model does not come with a fast mode.");
+}
+
+test "session_commands toggleFast cannot enable profile-locked fast mode" {
+    const alloc = std.testing.allocator;
+    var app = try FakeApp.init(alloc, "/tmp/workspace", "anthropic/claude-opus-4.6");
+    defer app.deinit();
+    app.fast_mode_lockout = true;
+    app.setGatewayControls("anthropic/claude-opus-4.6", &.{}, true);
+
+    try Commands(FakeApp).toggleFast(&app);
+
+    try std.testing.expect(!app.fast_mode);
+    try std.testing.expect(app.worker.synced_fast_mode == null);
+    try expectTranscriptContains(&app, "* fast: Fast mode is locked out by your profile settings.");
+}
+
+test "session_commands FX_FAST_MODE override cannot be toggled or persisted" {
+    const alloc = std.testing.allocator;
+    var app = try FakeApp.init(alloc, "/tmp/workspace", "anthropic/claude-opus-4.6");
+    defer app.deinit();
+    app.fast_mode = true;
+    app.fast_mode_override = true;
+    app.setGatewayControls("anthropic/claude-opus-4.6", &.{}, true);
+
+    try Commands(FakeApp).toggleFast(&app);
+
+    try std.testing.expect(app.fast_mode);
+    try std.testing.expectEqual(@as(usize, 0), app.preference_commit_count);
+    try expectTranscriptContains(&app, "* fast: Fast mode is forced on by FX_FAST_MODE.");
+
+    app.clearTranscript();
+    app.fast_mode = false;
+    app.fast_mode_override = false;
+    try Commands(FakeApp).toggleFast(&app);
+    try std.testing.expect(!app.fast_mode);
+    try std.testing.expectEqual(@as(usize, 0), app.preference_commit_count);
+    try expectTranscriptContains(&app, "* fast: Fast mode is forced off by FX_FAST_MODE.");
+}
+
+test "session_commands model selection preserves a locked fast preference" {
+    const alloc = std.testing.allocator;
+    var app = try FakeApp.init(alloc, "/tmp/workspace", "anthropic/claude-opus-4.6");
+    defer app.deinit();
+    app.fast_mode_lockout = true;
+    const efforts = [_]types.ReasoningEffort{types.ReasoningEffort.literal("high")};
+    app.setGatewayControls("anthropic/claude-opus-4.6", &efforts, true);
+
+    try Commands(FakeApp).selectModelFromPicker(
+        &app,
+        "anthropic/claude-opus-4.6",
+        types.ReasoningEffort.literal("high"),
+        false,
+    );
+
+    try std.testing.expect(!app.fast_mode);
+    try std.testing.expectEqual(@as(?bool, null), app.last_preference_fast_mode);
 }
 
 test "session_commands toggleFast disables stale fast mode for unsupported model" {

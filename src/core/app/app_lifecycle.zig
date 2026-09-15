@@ -134,6 +134,8 @@ pub const StartupState = struct {
     context_limits: config_runtime.context_limits.Values = .{},
     context_enabled: bool = true,
     fast_mode: bool = false,
+    fast_mode_lockout: bool = false,
+    fast_mode_override: ?bool = null,
     fast_mode_model_bound: bool = false,
     fast_mode_source: config_runtime.ConfigSource = .compiled_default,
     slash_menu_categories: bool = true,
@@ -520,6 +522,8 @@ fn loadStartupStateFromOwnedWorkspace(
     );
     state.fast_mode = fast_mode.enabled;
     state.fast_mode_model_bound = fast_mode.model_bound;
+    state.fast_mode_lockout = settings.fast_mode_lockout orelse false;
+    state.fast_mode_override = fastModeEnvOverride();
     state.fast_mode_source = detailed.sources.fast_mode;
     state.slash_menu_categories = settings.slash_menu_categories orelse true;
     state.collapse_tool_calls = settings.collapse_tool_calls orelse false;
@@ -1197,6 +1201,18 @@ fn credentialOnboardingDisabled() bool {
     return !std.mem.eql(u8, trimmed, "0") and !std.ascii.eqlIgnoreCase(trimmed, "false");
 }
 
+fn fastModeEnvOverride() ?bool {
+    return parseFastModeEnvOverride(io_mod.getenv("FX_FAST_MODE"));
+}
+
+fn parseFastModeEnvOverride(value: ?[]const u8) ?bool {
+    const raw = value orelse return null;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (std.ascii.eqlIgnoreCase(trimmed, "true")) return true;
+    if (std.ascii.eqlIgnoreCase(trimmed, "false")) return false;
+    return null;
+}
+
 const SoundEnvLevel = enum { off, on, max };
 
 fn soundEnvOverride() ?SoundEnvLevel {
@@ -1274,6 +1290,14 @@ test "permission mode loader defaults to auto" {
 
     try std.testing.expectEqual(PermissionMode.auto, loadPermissionMode(null));
     try std.testing.expectEqual(PermissionMode.ask, loadPermissionMode(.ask));
+}
+
+test "fast mode environment accepts explicit boolean overrides" {
+    try std.testing.expectEqual(@as(?bool, true), parseFastModeEnvOverride(" true "));
+    try std.testing.expectEqual(@as(?bool, false), parseFastModeEnvOverride("FALSE"));
+    try std.testing.expectEqual(@as(?bool, null), parseFastModeEnvOverride("1"));
+    try std.testing.expectEqual(@as(?bool, null), parseFastModeEnvOverride("on"));
+    try std.testing.expectEqual(@as(?bool, null), parseFastModeEnvOverride(null));
 }
 
 test "permission mode environment accepts yolo without changing fallback" {
@@ -2057,6 +2081,62 @@ test "loadStartupState defaults fast mode on only for the compiled Gateway defau
     try std.testing.expectEqual(model_provider.ProviderId.codex, codex.provider);
     try std.testing.expectEqualStrings("gpt-5.4-mini", codex.selected_model);
     try std.testing.expect(!codex.fast_mode);
+}
+
+test "loadStartupState carries fast mode lockout alongside enabled preference" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
+    const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
+    defer std.testing.allocator.free(home_root);
+    const workspace_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "workspace");
+    defer std.testing.allocator.free(workspace_root);
+
+    try writeFixtureFile(
+        tmp.dir,
+        "home/.fx/settings.json",
+        "{\"fast_mode\":true,\"fast_mode_lockout\":true}\n",
+    );
+
+    var env = try TestEnv.install(std.testing.allocator, &.{.{ .key = "HOME", .value = home_root }});
+    defer env.deinit();
+
+    var state = try loadStartupStateForWorkspace(std.testing.allocator, workspace_root, "zai/glm-5.2", 25);
+    defer state.deinit(std.testing.allocator);
+    try std.testing.expect(state.fast_mode);
+    try std.testing.expect(state.fast_mode_lockout);
+}
+
+test "loadStartupState carries FX_FAST_MODE override without changing preference" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
+    const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
+    defer std.testing.allocator.free(home_root);
+    const workspace_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "workspace");
+    defer std.testing.allocator.free(workspace_root);
+
+    try writeFixtureFile(
+        tmp.dir,
+        "home/.fx/settings.json",
+        "{\"fast_mode\":false,\"fast_mode_lockout\":true}\n",
+    );
+
+    var env = try TestEnv.install(std.testing.allocator, &.{
+        .{ .key = "HOME", .value = home_root },
+        .{ .key = "FX_FAST_MODE", .value = "true" },
+    });
+    defer env.deinit();
+
+    var state = try loadStartupStateForWorkspace(std.testing.allocator, workspace_root, "zai/glm-5.2", 25);
+    defer state.deinit(std.testing.allocator);
+    try std.testing.expect(!state.fast_mode);
+    try std.testing.expect(state.fast_mode_lockout);
+    try std.testing.expectEqual(@as(?bool, true), state.fast_mode_override);
 }
 
 test "loadStartupState resolves startup scrollback default and explicit false" {

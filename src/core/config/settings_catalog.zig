@@ -50,6 +50,7 @@ pub const Snapshot = struct {
     effort: []const u8 = "default",
     reasoning_efforts: model_capabilities.ReasoningEffortOptions = .{},
     fast_mode: bool = false,
+    fast_mode_allowed: bool = true,
     supports_fast_mode: bool = false,
     permission_mode: []const u8 = "ask",
     statusline_context: bool = false,
@@ -306,7 +307,7 @@ pub fn optionCount(snapshot: *const Snapshot, id: SettingId) usize {
             snapshot.reasoning_efforts.len + 1
         else
             0,
-        .fast_mode => if (snapshot.supports_fast_mode or snapshot.fast_mode) on_off_options.len else 0,
+        .fast_mode => if (snapshot.fast_mode_allowed and (snapshot.supports_fast_mode or snapshot.fast_mode)) on_off_options.len else 0,
         else => staticOptionsFor(id).len,
     };
 }
@@ -370,6 +371,7 @@ fn staticOptionsFor(id: SettingId) []const []const u8 {
 }
 
 fn matches(snapshot: Snapshot, spec: Spec, category: Category, query: []const u8) bool {
+    if (spec.id == .fast_mode and !snapshot.fast_mode_allowed) return false;
     return (category == .all or spec.category == category) and matchesQuery(snapshot, spec, query);
 }
 
@@ -433,6 +435,18 @@ test "settings catalog projects grouped searchable preferences" {
     try std.testing.expectEqual(SettingId.startup_scrollback, startup.id);
     try std.testing.expectEqualStrings("on", startup.value);
     try std.testing.expect(itemAt(snapshot, .all, "missing preference", 0) == null);
+}
+
+test "settings catalog hides fast mode when profile disables it" {
+    const snapshot: Snapshot = .{
+        .fast_mode = false,
+        .fast_mode_allowed = false,
+        .supports_fast_mode = true,
+    };
+
+    try std.testing.expect(itemAt(snapshot, .agent, "fast mode", 0) == null);
+    try std.testing.expectEqual(@as(usize, 0), optionCount(&snapshot, .fast_mode));
+    try std.testing.expectEqual(@as(usize, 4), filteredCount(snapshot, .agent, ""));
 }
 
 test "settings catalog displays legacy yolo as full access and cycles from it" {

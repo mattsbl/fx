@@ -375,12 +375,14 @@ pub const SessionPreferencePatch = struct {
     model: ?[]const u8 = null,
     effort: ?types.ReasoningEffort = null,
     fast_mode: ?bool = null,
+    preserve_fast_mode_model_bound: bool = false,
 
     pub fn userSettingsPatch(self: SessionPreferencePatch) config_runtime.UserSettingsPatch {
         var patch = config_runtime.UserSettingsPatch{
             .provider = self.provider,
             .effort = self.effort,
             .fast_mode = self.fast_mode,
+            .preserve_fast_mode_model_bound = self.preserve_fast_mode_model_bound,
         };
         if (self.model) |model| patch.model_preference = .{
             .provider = self.provider orelse .gateway,
@@ -1270,6 +1272,16 @@ test "persistence in-place initialization preserves empty ownership" {
 
 pub fn Runtime(comptime App: type) type {
     return struct {
+        fn fastModeLockedOut(app: *const App) bool {
+            if (comptime @hasField(App, "fast_mode_lockout")) return app.fast_mode_lockout;
+            return false;
+        }
+
+        fn fastModeOverride(app: *const App) ?bool {
+            if (comptime @hasField(App, "fast_mode_override")) return app.fast_mode_override;
+            return null;
+        }
+
         pub fn captureImageAttachment(
             app: *App,
             attachment: *types.ImageAttachment,
@@ -2691,7 +2703,7 @@ pub fn Runtime(comptime App: type) type {
             applySessionPreferencePatch(app, patch) catch |err| {
                 result.session_error = err;
             };
-            if (patch.model != null or patch.fast_mode != null) {
+            if (!patch.preserve_fast_mode_model_bound and (patch.model != null or patch.fast_mode != null)) {
                 app.session_persistence.fast_mode_model_bound =
                     patch.model != null and patch.fast_mode != null;
             }
@@ -4945,6 +4957,7 @@ pub fn Runtime(comptime App: type) type {
             app: *App,
             preferences: session_codec.DurableSessionPreferences,
         ) !void {
+            const fast_mode = fastModeOverride(app) orelse (preferences.fast_mode and !fastModeLockedOut(app));
             const fast_mode_model_bound = restoredFastModeModelBound(
                 app.session_persistence.fast_mode_model_bound,
                 app.session_persistence.workspace_preferences,
@@ -4959,14 +4972,14 @@ pub fn Runtime(comptime App: type) type {
                 provider_runtime.model(app),
             );
             app.effort = preferences.effort;
-            app.fast_mode = preferences.fast_mode;
+            app.fast_mode = fast_mode;
             app.session_persistence.fast_mode_model_bound = fast_mode_model_bound;
             app.worker.syncQueuedPromptEffort(preferences.effort);
-            app.worker.syncQueuedPromptFastMode(preferences.fast_mode);
+            app.worker.syncQueuedPromptFastMode(fast_mode);
         }
 
         pub fn fastModeModelBound(app: *const App) bool {
-            return app.session_persistence.fast_mode_model_bound;
+            return fastModeOverride(app) orelse app.session_persistence.fast_mode_model_bound;
         }
 
         fn applySessionPreferencePatch(
@@ -5373,6 +5386,8 @@ const TestApp = struct {
     selected_model: std.ArrayList(u8) = .empty,
     effort: types.ReasoningEffort = .auto,
     fast_mode: bool = false,
+    fast_mode_lockout: bool = false,
+    fast_mode_override: ?bool = null,
     total_input_tokens: u64 = 0,
     total_output_tokens: u64 = 0,
     total_web_search_requests: u64 = 0,
@@ -5877,6 +5892,81 @@ test "js-host resume restores transcript context preferences usage and revision"
         "revision-1",
         app.session_persistence.js_host_session.?.revision.?,
     );
+}
+
+test "js-host resume masks but preserves a profile-locked fast preference" {
+    const alloc = std.testing.allocator;
+    var fake = FakeJsHostSessionStore{
+        .state = try makeJsHostTestState(
+            alloc,
+            "restored-session",
+            "remember this prompt",
+            "remembered reply",
+        ),
+        .updated_at_ms = 99,
+    };
+    defer fake.deinit(alloc);
+    var app = try TestApp.init(alloc, "/workspace");
+    defer app.deinit();
+    app.fast_mode_lockout = true;
+    try Runtime(TestApp).configureStartupPreferences(
+        &app,
+        .gateway,
+        "startup/model",
+        .user_global,
+        "startup/model",
+        .auto,
+        false,
+        false,
+    );
+    app.session_persistence.js_host_store = fake.store();
+    app.requested_resume = .last;
+
+    try Runtime(TestApp).resumeRequestedJsHostSession(&app);
+
+    try std.testing.expect(!app.fast_mode);
+    try std.testing.expect(!app.worker.fast_mode);
+    try std.testing.expect(!Runtime(TestApp).fastModeModelBound(&app));
+    try std.testing.expect(app.session_persistence.session_preferences.?.fast_mode);
+    try std.testing.expect(app.session_persistence.js_host_session.?.state.preferences.fast_mode);
+}
+
+test "js-host resume honors a temporary fast mode override without rewriting preferences" {
+    const alloc = std.testing.allocator;
+    var fake = FakeJsHostSessionStore{
+        .state = try makeJsHostTestState(
+            alloc,
+            "restored-session",
+            "remember this prompt",
+            "remembered reply",
+        ),
+        .updated_at_ms = 99,
+    };
+    fake.state.?.preferences.fast_mode = false;
+    defer fake.deinit(alloc);
+    var app = try TestApp.init(alloc, "/workspace");
+    defer app.deinit();
+    app.fast_mode_override = true;
+    try Runtime(TestApp).configureStartupPreferences(
+        &app,
+        .gateway,
+        "startup/model",
+        .user_global,
+        "startup/model",
+        .auto,
+        true,
+        false,
+    );
+    app.session_persistence.js_host_store = fake.store();
+    app.requested_resume = .last;
+
+    try Runtime(TestApp).resumeRequestedJsHostSession(&app);
+
+    try std.testing.expect(app.fast_mode);
+    try std.testing.expect(app.worker.fast_mode);
+    try std.testing.expect(Runtime(TestApp).fastModeModelBound(&app));
+    try std.testing.expect(!app.session_persistence.session_preferences.?.fast_mode);
+    try std.testing.expect(!app.session_persistence.js_host_session.?.state.preferences.fast_mode);
 }
 
 test "js-host compaction store failure preserves live history and revision" {
